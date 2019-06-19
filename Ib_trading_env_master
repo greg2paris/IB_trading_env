@@ -1,0 +1,164 @@
+from ib_insync import *
+from decimal import *
+
+from stable_baselines.common.vec_env import DummyVecEnv
+from stable_baselines import PPO2
+
+import time
+from IPython.display import clear_output
+
+import numpy as np
+import pandas as pd
+
+import gym
+from gym import spaces
+from gym.utils import seeding
+
+import matplotlib.pyplot as plt
+plt.rcParams['figure.figsize'] = [3, 3]
+
+
+desired_width=180
+pd.set_option('display.width', desired_width)
+pd.set_option('display.max_columns', 100)
+
+
+def import_data(duration, barsize):
+    df = util.df(ib.reqHistoricalData(
+            contract,
+            endDateTime='',
+            durationStr=duration,
+            barSizeSetting=barsize,
+            whatToShow='MIDPOINT',
+            useRTH=True,
+            formatDate=1,
+            keepUpToDate=False))
+    df =  df[['date', 'open', 'high', 'low', 'close']]
+    return df
+
+
+def place_order_func(type_of_trade, number_of_share):
+    order = MarketOrder(type_of_trade, number_of_share)
+    trade = ib.placeOrder(contract, order)
+    return trade
+
+
+def onTickerUpdate(ticker):
+    print("++++++++++++++++++++++++++++++++++++++")
+    try:
+        unrealized_pnl = ib.portfolio()[0][5]
+        print(ib.portfolio())  # show full portofolio
+        print("unrealized pnl: ", unrealized_pnl, "realized pnl: ", realized_pnl)  # show portofolio
+    except:
+        unrealized_pnl = 0
+        print("no position opened")
+    print(ib.pnl())
+
+    try:
+        print(ib.positions())
+
+    except:
+        print("no positions")
+
+    bids = ticker.domBids
+    for i in range(number_of_lines):
+        df.iloc[i, 0] = bids[i].size if i < len(bids) else 0
+        df.iloc[i, 1] = bids[i].price if i < len(bids) else 0
+    asks = ticker.domAsks
+    for i in range(number_of_lines):
+        df.iloc[i, 2] = asks[i].price if i < len(asks) else 0
+        df.iloc[i, 3] = asks[i].size if i < len(asks) else 0
+    clear_output(wait=True)
+    df_array = np.array(df)
+    df_array = df_array.flatten()
+    df_array = np.append(df_array, unrealized_pnl)
+
+    # Create vector env
+    env = DummyVecEnv([lambda: Trading_Env(df_array)])
+    policy = 'MlpPolicy'
+
+    try:
+        model
+    except NameError:
+        model_exists = False
+    else:
+        model_exists = True
+
+    if not model_exists:
+        model = PPO2(policy, env, verbose=0)
+
+    if model_exists:
+        print("Same Model")
+
+
+
+    print("____________________________________________Training Phase____________________________________________")
+    print("")
+    print(model)
+    print("Learning Rate: ", model.learning_rate)
+    start_time = time.time()
+
+    # Train the agent for 10000 steps
+    model.learn(total_timesteps=1)
+
+    print("environment_times_steps", 1)
+    print("Training Phase phase runned for --- %s seconds ---" % (time.time() - start_time))
+    print("Average time for one timestep :", ((time.time() - start_time) / 1))
+
+    model.save("model_ppo2")
+
+
+class Trading_Env(gym.Env):
+    metadata = {'render.modes': ['human']}
+
+    def __init__(self, df_array):
+        super(Trading_Env, self).__init__()
+
+        self.state = df_array
+        self.df_array_shape = self.state.shape
+
+        # defines action space
+        self.action_space = spaces.Discrete(3)  # trade, tp, sl
+        self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=self.df_array_shape, dtype=np.float32)
+
+    def render(self, mode='human', verbose=False):
+        return None
+
+    def seed(self, seed=None):
+        self.np_random, seed = seeding.np_random(seed)
+        return [7]
+
+    def step(self, action):
+        print("action: ", action)
+
+        if action == 1:
+            trade = place_order_func('BUY', 20000)  # 'BUY' 'SELL'
+        elif action == 2:
+            trade = place_order_func('SELL', 20000)  # 'BUY' 'SELL'
+
+        self.done = False
+        info = {}
+        return self.state, self.reward, self.done, info  # ,self.EURUSD_n_long, self.EURUSD_n_short
+
+    def reset(self):
+        return self.state
+
+
+# create interactive broker connection
+ib = IB()
+ib.connect('127.0.0.1', 7497, clientId=16)
+
+l = ib.reqMktDepthExchanges()
+l[:5]
+
+contract = Forex('EURUSD')
+ib.qualifyContracts(contract)
+ticker = ib.reqMktDepth(contract)
+
+
+number_of_lines = 10
+df = pd.DataFrame(index=range(number_of_lines), columns='bidSize bidPrice askPrice askSize'.split())
+
+for ii in range(100):
+    ticker.updateEvent += onTickerUpdate
+    IB.sleep(15)
